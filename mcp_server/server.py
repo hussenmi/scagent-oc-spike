@@ -172,24 +172,40 @@ def _to_content(items) -> list:
 _WS = re.compile(r"\s+")
 
 
-def _progress_digest(frags: list[str], elapsed: float) -> str | None:
-    """One-line digest of the worker's streamed progress (scVI epochs, tqdm, …).
+def _newest_committed_log(session_dir: Path) -> Path | None:
+    """The execution.stdout.log of the capability that just committed (newest by mtime).
 
-    opencode 1.18.x cannot render live MCP progress (it discards the notification
-    `message` — see server.py heartbeat note), so for long GPU capabilities the user
-    otherwise sees nothing about what the compute did. scagent-sdk already streams the
-    worker's stdout through the executor's `progress` callback; we accumulate it and
-    fold its tail into the tool RESULT, so the moment the call returns the user gets
-    "how long + the last thing it printed" without the whole log. `watchprogress.sh`
-    is the LIVE counterpart (a side tail of the same output while it runs). Returns
-    None for quick tools that stream nothing, so only real compute gets a digest.
+    Calls are serial per session, so after commit the freshest committed worker log belongs to
+    the tool we just ran. Used to name the concrete on-disk log in the digest.
+    """
+    try:
+        logs = list(session_dir.glob("artifacts/capabilities/*/execution.stdout.log"))
+    except Exception:
+        return None
+    logs = [p for p in logs if p.is_file() and p.stat().st_size > 0]
+    return max(logs, key=lambda p: p.stat().st_mtime, default=None)
+
+
+def _progress_digest(frags: list[str], elapsed: float, session_dir: Path) -> str | None:
+    """Digest of a worker's streamed progress (scVI epochs, tqdm, …), naming the log.
+
+    opencode 1.18.x cannot render live MCP progress (it discards the notification `message` —
+    see server.py heartbeat note), so for long GPU capabilities the user otherwise sees nothing
+    about what the compute did. scagent-sdk already streams the worker's stdout through the
+    executor's `progress` callback; we accumulate it and fold its tail into the tool RESULT, and
+    name the concrete on-disk log so there is a file to open after the fact. Returns None for
+    quick tools that stream nothing, so only real compute gets a digest.
     """
     lines = [_WS.sub(" ", f).strip() for f in frags]
     lines = [ln for ln in lines if ln]
     if not lines:
         return None
     tail = " | ".join(lines[-2:])[:240]
-    return f"[progress] {elapsed:.0f}s, {len(lines)} update(s) — last: {tail}"
+    parts = [f"[progress] {elapsed:.0f}s, {len(lines)} update(s) — last: {tail}"]
+    log = _newest_committed_log(session_dir)
+    if log is not None:
+        parts.append(f"full log saved at: {log}")
+    return "\n".join(parts)
 
 
 async def _dispatch(name: str, arguments: dict) -> list:
@@ -225,7 +241,7 @@ async def _dispatch(name: str, arguments: dict) -> list:
         executor.commit_from_hook({"tool_response": response})
     _write_checkpoint(session)  # refresh authoritative checkpoint after every tool call
     content = _to_content(response.get("content"))
-    digest = _progress_digest(frags, elapsed)
+    digest = _progress_digest(frags, elapsed, session.directory)
     if digest:
         content.append(mt.TextContent(type="text", text=digest))
     return content
