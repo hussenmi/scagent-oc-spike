@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# scagent — one entry point for the scagent × opencode spike. Run from anywhere; it
+# operates on this folder. For now use it as ./scagent <cmd> from inside the spike
+# (symlink it onto your PATH later for a bare `scagent`).
+#
+#   ./scagent start [opencode-args]   launch the TUI with background subagents ENABLED
+#   ./scagent watch [--once] [run]    live progress of the running compute (or a one-shot read)
+#   ./scagent state                   pretty-print scagent-sdk's durable facts per run
+#
+# `start` is the important one: opencode gates background offload behind an env var that
+# must live in opencode's OWN process env (opencode.json's mcp.*.environment only reaches
+# the MCP server), so we export it here and exec opencode from this directory.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+cmd="${1:-start}"
+[ $# -gt 0 ] && shift || true
+
+case "$cmd" in
+  start)
+    export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
+    exec "$HOME/.opencode/bin/opencode" "$@"
+    ;;
+  watch)
+    exec ./watchprogress.sh "$@"
+    ;;
+  state)
+    exec ./showstate.sh "$@"
+    ;;
+  -h|--help|help)
+    grep '^#' "$0" | grep -v '^#!' | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    echo "scagent: unknown command '$cmd' (try: start | watch | state | help)" >&2
+    exit 1
+    ;;
+esac

@@ -91,8 +91,11 @@ const NUDGE_MARKER = "[REPORTING REQUIREMENT"
 const REPORTING_NUDGE =
   `\n\n${NUDGE_MARKER} — the user is reading your messages, not this tool output. Your next ` +
   "turn MUST begin with 2-5 sentences of plain message content interpreting this result (cite the " +
-  "actual values) and naming your next step, and MUST then make the next tool call in that same turn. " +
-  "A tool call with empty message content is malformed and shows the user nothing.]"
+  "actual values). Then take the next action IF there is one: normally make the next tool call in the " +
+  "same turn (a tool call with empty message content is malformed and shows the user nothing). BUT if " +
+  "you just launched a background job, or are waiting on one, or the next step depends on a result that " +
+  "does not exist yet — do NOT force a tool call. Say what you started and that you will report back, " +
+  "then end the turn and wait. Stopping to wait is correct there, not silent tool-chaining.]"
 
 const FIGURE_NOTE = (name: string) =>
   `[figure aged out of the chat to save context${name ? ` — saved as ${name}` : ""}. ` +
@@ -103,12 +106,71 @@ const RESULT_NOTE =
   "[older tool output trimmed to save context. The full result is on disk: the analysis " +
   "state is in state.json and the artifact is indexed by its execution id. Re-read it if needed.]"
 
-export const plugin: Plugin = async ({ directory }) => {
+// Background-offload policy. opencode runs a subagent in the background (task background=true) and
+// notifies us on completion; the subagent's scagent work correlates to THIS analysis (see rootOf)
+// and commits by its own execution id. Key points the model otherwise gets wrong: INDEPENDENT
+// computes MAY run in PARALLEL — verified safe, because the executor isolates each call's staging,
+// snapshots state, and serializes commits under an exclusive lock with an RFC-7396 deep merge +
+// stale-base guard, so each result records cleanly by execution id. So after launching a job the
+// model should launch any genuinely independent work too rather than sit idle; it waits only when
+// the next step depends on the running result. It must still avoid running two matrix-MUTATING
+// steps at once, never poll the subagent via the task channel, and never re-launch a job.
+const BACKGROUND_OFFLOAD = `## Long-running compute — offload it to stay responsive
+
+A long-running compute should not freeze the conversation. Before each capability call, judge how
+long it will take from what the step actually does and how large the data is, and DEFAULT to running
+it in the background whenever you expect it to take more than roughly a minute; genuinely quick calls
+run inline. Do not rely on a memorized list of function names — reason about the cost: heavy work is
+things like training a model, integrating batches, removing ambient noise, annotating against a large
+reference, or clustering / building a neighbor graph on a large dataset; light work is inspections,
+reviews, small summaries, and plots.
+
+To offload: call the \`task\` tool with subagent_type "scagent-compute", background true, and a
+prompt naming the exact capability and its arguments. It returns immediately, records its result
+into THIS analysis (same run, its own execution id), and you are notified automatically when it
+finishes.
+
+After you launch a background job, do ONE of two things — never sit idle pretending there is nothing
+to do:
+
+(A) If there is genuinely INDEPENDENT work — a step that does not consume the running job's output
+and does not rewrite the matrix the pipeline continues from — DO IT IN PARALLEL. Launch it too, as
+its own background \`scagent-compute\` job, so you stay responsive. Independent computes are safe to
+run at once: each records separately under its own execution id (nothing is lost or clobbered).
+Classic parallelizable work: different annotation methods (SCimilarity vs CellTypist), differential
+expression, integration scoring — they read the current clustering and each write a SEPARATE result.
+If you just told the user "while this runs I'll do X," then actually launch X now — announcing
+parallel work and then waiting idle is a failure.
+
+(B) If there is NOTHING independent to do — the only next steps depend on the running result — then
+STOP and wait. Post one short line (what is running, that you will report when it lands) and END
+YOUR TURN. A message-only turn is correct here; it is not "silent tool-chaining." Do not re-check the
+log, re-run anything, or narrate step by step. Give the job real time to run.
+
+While any background job is running:
+- Do NOT run two matrix-MUTATING steps at once, and do NOT start a step before the result it depends
+  on exists. Parallelize only mutually independent, read-mostly work; serialize anything that
+  transforms the matrix the rest of the pipeline continues from (QC/filter, normalize, HVG, PCA,
+  neighbors, clustering, the integration that becomes the working representation).
+- Check progress only when the USER asks. Then run \`./watchprogress.sh --once\` ONCE and report what
+  it says (running + elapsed, or the latest epoch). That is a plain FILE/PROCESS READ — not a scagent
+  tool call and not "polling the subagent" — so it is allowed, but on request, not in a loop.
+- NEVER re-launch a job. If a check says nothing is running, it almost always FINISHED (a long
+  compute does not silently die) — find its result in the durable state / committed artifacts BY
+  EXECUTION ID and report THAT. Never start a second copy of the same compute.
+- Do NOT message or "poll" the SUBAGENT through the task channel; completion is pushed to you.
+
+When a completion notice arrives, read that job's durable result (by execution id) and carry the
+workflow forward. If several jobs were running in parallel, wait until the ones a step depends on
+have all landed before starting that step.`
+
+export const plugin: Plugin = async ({ directory, client }) => {
   const mapDir = join(directory, "session-map")
   if (!existsSync(mapDir)) mkdirSync(mapDir, { recursive: true })
   const pointer = join(mapDir, "current.txt")
   const instructionsFile = join(mapDir, "skill-instructions.txt")
-  const checkpointFile = join(mapDir, "durable-checkpoint.txt")
+  const sessionMapFile = join(mapDir, "scagent-map.json")
+  const sessionsDir = join(directory, "scagent_sessions")
 
   const readOr = (p: string): string => {
     try {
@@ -118,27 +180,73 @@ export const plugin: Plugin = async ({ directory }) => {
     }
   }
 
+  // Resolve a session to its ROOT session (walk parentID to the top). A background subagent runs
+  // in its own child session, but its scagent work must land in the PARENT analysis's durable run
+  // — so we correlate every call by the root, not the raw calling session. opencode records the
+  // parent link at child creation and the server exposes it via client.session.get. The child→root
+  // mapping is immutable, so we cache it. On any failure we fall back to the session itself, which
+  // is exactly the pre-existing (single-session) behavior — never worse.
+  const rootCache = new Map<string, string>()
+  const rootOf = async (sessionID: string): Promise<string> => {
+    const cached = rootCache.get(sessionID)
+    if (cached) return cached
+    let id = sessionID
+    try {
+      for (let hop = 0; hop < 16; hop++) {
+        const res: any = await client.session.get({ path: { id } })
+        const parent = res?.data?.parentID
+        if (!parent) break
+        id = parent
+      }
+    } catch {
+      // Transient lookup failure (e.g. session not registered yet): fall back to the session
+      // itself for THIS call but do NOT cache it — the parent link is immutable, so a later call
+      // must be free to resolve the real root instead of being stuck on a poisoned fallback.
+      return sessionID
+    }
+    rootCache.set(sessionID, id)
+    return id
+  }
+
+  // The durable checkpoint the model is grounded on each turn — read PER RUN, for THIS session's
+  // own analysis. The server writes it into the run's directory; we map session → root → run (via
+  // the server-maintained session map) and read that run's checkpoint. A brand-new session has no
+  // run yet → we inject nothing (rather than leaking the previous run's checkpoint, which made the
+  // model think prior artifacts existed and then report the state as "reset"). A resuming session
+  // already maps to its run, whose checkpoint is on disk, so it is restored correctly.
+  const runCheckpointFor = async (sessionID: string): Promise<string> => {
+    try {
+      const root = await rootOf(sessionID)
+      const map = JSON.parse(readOr(sessionMapFile) || "{}")
+      const run = map?.[root]
+      if (!run) return ""
+      return readOr(join(sessionsDir, run, "durable-checkpoint.txt"))
+    } catch {
+      return ""
+    }
+  }
+
   return {
-    // (1) publish which opencode session is active; the MCP server maps it to a
-    // durable scagent session (run_...), creating one on first use.
+    // (1) publish which durable analysis a call belongs to. The MCP server maps the
+    // pointer's session id to a durable scagent run (creating one on first use).
     //
-    // We assert the pointer BOTH on each user message and — crucially — right
-    // before every tool call. opencode 1.18.x does not forward tool arg mutations
-    // to MCP tools, so correlation rides a shared pointer file; writing it only
-    // once per message let a *second* active opencode session clobber it and split
-    // one analysis across two scagent sessions. Re-asserting in tool.execute.before
-    // (which fires per-call with the right sessionID, and is awaited before the MCP
-    // call runs) keeps a single active session correct. (Truly simultaneous tool
-    // calls from two sessions can still race — run one analysis at a time.)
+    // We write the ROOT session id (not the raw calling session), so a background
+    // subagent's compute lands in its PARENT analysis's run instead of splitting off
+    // a new one. For an ordinary top-level session root === itself, so this is a no-op
+    // versus the previous behavior. We assert it BOTH on each user message and — crucially
+    // — right before every tool call (which fires per-call with the calling sessionID, and
+    // is awaited before the MCP call runs). Parent and child both resolve to the same root,
+    // so concurrent writes carry the same value and do not split the analysis. (Two *different*
+    // root analyses running at once can still race the single pointer — run one at a time.)
     "chat.message": async (input) => {
       try {
-        writeFileSync(pointer, input.sessionID)
+        writeFileSync(pointer, await rootOf(input.sessionID))
       } catch {}
     },
 
     "tool.execute.before": async (input) => {
       try {
-        writeFileSync(pointer, input.sessionID)
+        writeFileSync(pointer, await rootOf(input.sessionID))
       } catch {}
     },
 
@@ -150,12 +258,18 @@ export const plugin: Plugin = async ({ directory }) => {
     //
     // Fold into the FIRST system block — adding a new system entry makes some vLLM
     // chat templates reject the request ("System message must be at the beginning").
-    "experimental.chat.system.transform": async (_input, output) => {
-      const checkpoint = readOr(checkpointFile).trim()
+    "experimental.chat.system.transform": async (input, output) => {
+      // Inject the checkpoint for THIS session's run. Prefer the hook's sessionID; fall back to
+      // the active-session pointer (which holds the current root) when it is absent.
+      const sid = (input?.sessionID || readOr(pointer).trim()).trim()
+      const checkpoint = (sid ? await runCheckpointFor(sid) : "").trim()
       const instructions = readOr(instructionsFile).trim()
       const inject = [checkpoint, instructions].filter(Boolean).join("\n\n")
+      // Reporting contract + background-offload policy both ride at the END of the system
+      // prompt; bundle them so the marker guard covers both.
+      const contract = [REPORTING_CONTRACT, BACKGROUND_OFFLOAD].join("\n\n")
       if (output.system.length === 0) {
-        output.system.push([inject, REPORTING_CONTRACT].filter(Boolean).join("\n\n"))
+        output.system.push([inject, contract].filter(Boolean).join("\n\n"))
         return
       }
       // scagent context goes in FRONT of opencode's own prompt ...
@@ -166,7 +280,7 @@ export const plugin: Plugin = async ({ directory }) => {
       // templates reject a system message that is not the first message.
       const last = output.system.length - 1
       if (!output.system[last].includes("## Reporting contract")) {
-        output.system[last] = `${output.system[last]}\n\n${REPORTING_CONTRACT}`
+        output.system[last] = `${output.system[last]}\n\n${contract}`
       }
     },
 

@@ -53,6 +53,15 @@
     "single-cell": {
       "description": "Single-cell RNA-seq analysis driven by scagent-sdk capabilities and floors",
       "mode": "primary"
+    },
+    "scagent-compute": {
+      "description": "Runs exactly ONE long-running scagent compute capability (train_scvi_latent, run_scimilarity_annotation, remove_ambient_background, …) to completion and reports its result. For background offload of a single independent step — does not plan, delegate, branch, or run anything else.",
+      "mode": "subagent",
+      "prompt": "You are a focused compute worker for a single-cell analysis. Run the SINGLE scagent capability you were asked to run, with exactly the arguments given, and nothing else. When it returns, report one short paragraph: the key numbers, the execution id, and where the artifact/figure landed. Do not call any other scagent tool, do not plan or explore, do not spawn subagents, and do not start downstream steps — your entire job is that one capability call and its result.",
+      "tools": {
+        "task": false,
+        "todowrite": false
+      }
     }
   },
   "command": {

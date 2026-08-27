@@ -54,7 +54,10 @@ SESSION_MAP = Path(
     os.environ.get("SCAGENT_SESSION_MAP", str(Path(__file__).resolve().parent.parent / "session-map" / "scagent-map.json"))
 )
 INSTRUCTIONS_OUT = os.environ.get("SCAGENT_INSTRUCTIONS_FILE")  # plugin injects this into the system prompt
-CHECKPOINT_OUT = os.environ.get("SCAGENT_CHECKPOINT_FILE")  # durable-state checkpoint the plugin injects each turn
+# The durable checkpoint is written PER RUN, into the run's own directory (see _write_checkpoint),
+# not to a single global file — a global file leaks the previous run's state into a freshly started
+# session's first turns. The plugin injects the checkpoint belonging to THIS session's run.
+CHECKPOINT_NAME = "durable-checkpoint.txt"
 
 # --- discover scagent-sdk capabilities once ---------------------------------
 REGISTRY = CapabilityRegistry(SKILLS_ROOT)
@@ -85,7 +88,7 @@ _SESSIONS: dict[str, tuple[AnalysisSession, CapabilityExecutor]] = {}
 
 
 def _write_checkpoint(session: AnalysisSession) -> None:
-    """Render scagent-sdk's authoritative durable checkpoint and publish it for the plugin.
+    """Render scagent-sdk's authoritative durable checkpoint into THIS run's own directory.
 
     This is the heart of the compaction contract: the model's working context is
     disposable prose, but the *authoritative* analysis — facts, decisions, and an
@@ -93,16 +96,20 @@ def _write_checkpoint(session: AnalysisSession) -> None:
     scagent-sdk's own `resume_context` after every tool call so the plugin can inject
     the current, bounded checkpoint into the system prompt each turn. The agent is
     thereby steered to rely on state.json + execution ids, not on remembered prose.
+
+    The checkpoint is written PER RUN (into the run's directory), not to one global file.
+    A global file is shared across sessions, so a freshly started session would be injected
+    with the PREVIOUS run's checkpoint on its first turns (before its own first tool call
+    overwrote the file) — which made the model believe prior artifacts existed and then
+    report the state as "reset" when the new run's disk was empty. Keyed by run, the plugin
+    can inject exactly this session's run — and nothing at all for a brand-new session.
     """
-    if not CHECKPOINT_OUT:
-        return
     try:
         store = session.store
         text = resume_context(
             store.metadata, store.state, events=list(store.events()), session_dir=session.directory
         )
-        Path(CHECKPOINT_OUT).parent.mkdir(parents=True, exist_ok=True)
-        Path(CHECKPOINT_OUT).write_text(text)
+        (session.directory / CHECKPOINT_NAME).write_text(text)
     except Exception:
         pass
 
