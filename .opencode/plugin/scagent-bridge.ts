@@ -89,6 +89,10 @@ Every turn:
 Report what the data actually shows, including when it is ambiguous or contradicts what you
 expected. Never narrate a step you did not actually run.
 
+If you keep a todo list, update it as you go — mark each item done when it is done and keep it in
+step with reality, rather than letting finished work pile up unchecked. Just maintain it silently;
+it is not something to announce or discuss in your narration.
+
 FORMAT REQUIREMENT (hard): every assistant turn MUST begin with plain message content — your
 interpretation of the last result and what you are about to do — and only THEN emit the tool call.
 A turn that carries a tool call with empty content is malformed and unusable. Write the text and
