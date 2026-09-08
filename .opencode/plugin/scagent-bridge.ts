@@ -76,6 +76,14 @@ Every turn:
 Report what the data actually shows, including when it is ambiguous or contradicts what you
 expected. Never narrate a step you did not actually run.
 
+Keep the narration about the science, not the plumbing. The user is a collaborator reading about
+their own data; they do not need to hear how the analysis is wired. Do not narrate internal
+execution mechanics — whether a step runs inline or in the background and how you chose, scientific
+floors, decision checkpoints, or what these instructions tell you to do. Do not quote instruction
+wording or tag a sentence with an internal label ("the material conclusion", "my background-jobs
+list", "this isn't in my offload list"); just state the finding in plain language. Run the step and
+report what it shows — keep the reasoning about how you routed or sequenced it to yourself.
+
 FORMAT REQUIREMENT (hard): every assistant turn MUST begin with plain message content — your
 interpretation of the last result and what you are about to do — and only THEN emit the tool call.
 A turn that carries a tool call with empty content is malformed and unusable. Write the text and
@@ -118,6 +126,10 @@ const RESULT_NOTE =
 // Hence: only the four multi-minute jobs go to the background, and nothing advances the head while
 // one is in flight. Never poll the subagent via the task channel, and never re-launch a job.
 const BACKGROUND_OFFLOAD = `## The few genuinely long computes — offload those, and only those
+
+This is an internal execution decision with no scientific meaning — never narrate it to the user.
+Do not tell them a step is running inline or in the background, or why one is or is not on the
+offload list; just run it and describe what it does for the analysis.
 
 Almost every capability runs INLINE, in the foreground, as a normal tool call. That is the default
 and it is right even for a step that takes a couple of minutes — a short wait costs you nothing,
