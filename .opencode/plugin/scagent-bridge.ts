@@ -108,50 +108,58 @@ const RESULT_NOTE =
 
 // Background-offload policy. opencode runs a subagent in the background (task background=true) and
 // notifies us on completion; the subagent's scagent work correlates to THIS analysis (see rootOf)
-// and commits by its own execution id. Key points the model otherwise gets wrong: INDEPENDENT
-// computes MAY run in PARALLEL — verified safe, because the executor isolates each call's staging,
-// snapshots state, and serializes commits under an exclusive lock with an RFC-7396 deep merge +
-// stale-base guard, so each result records cleanly by execution id. So after launching a job the
-// model should launch any genuinely independent work too rather than sit idle; it waits only when
-// the next step depends on the running result. It must still avoid running two matrix-MUTATING
-// steps at once, never poll the subagent via the task channel, and never re-launch a job.
-const BACKGROUND_OFFLOAD = `## Long-running compute — offload it to stay responsive
+// and commits by its own execution id. The policy is deliberately a SHORT ALLOW-LIST rather than a
+// "judge how slow it looks" heuristic: given the heuristic, the model backgrounded ~1-minute steps
+// (Scrublet) and then advanced the head in the foreground, so the stale-base guard refused the
+// commit; the retry with branch_from landed the evidence off the active line, where the evidence
+// floor would not accept it — four runs of the same job to get one usable result. Concurrency is
+// safe at the storage layer (isolated staging, snapshotted state, commits serialized under an
+// exclusive lock with an RFC-7396 deep merge + stale-base guard) — it is the LINEAGE that is not.
+// Hence: only the four multi-minute jobs go to the background, and nothing advances the head while
+// one is in flight. Never poll the subagent via the task channel, and never re-launch a job.
+const BACKGROUND_OFFLOAD = `## The few genuinely long computes — offload those, and only those
 
-A long-running compute should not freeze the conversation. Before each capability call, judge how
-long it will take from what the step actually does and how large the data is, and DEFAULT to running
-it in the background whenever you expect it to take more than roughly a minute; genuinely quick calls
-run inline. Do not rely on a memorized list of function names — reason about the cost: heavy work is
-things like training a model, integrating batches, removing ambient noise, annotating against a large
-reference, or clustering / building a neighbor graph on a large dataset; light work is inspections,
-reviews, small summaries, and plots.
+Almost every capability runs INLINE, in the foreground, as a normal tool call. That is the default
+and it is right even for a step that takes a couple of minutes — a short wait costs you nothing,
+while a backgrounded step you then have to wait for anyway costs you a whole extra round trip and
+puts the commit at risk (see the head rule below).
 
-To offload: call the \`task\` tool with subagent_type "scagent-compute", background true, and a
-prompt naming the exact capability and its arguments. It returns immediately, records its result
-into THIS analysis (same run, its own execution id), and you are notified automatically when it
-finishes.
+Offload to the background ONLY these — the multi-minute model-training and large-reference jobs:
 
-After you launch a background job, do ONE of two things — never sit idle pretending there is nothing
-to do:
+- \`train_scvi_latent\`  (scVI integration training)
+- \`remove_ambient_background\`  (CellBender)
+- \`run_scimilarity_annotation\`
+- \`run_celltypist_annotation\`
 
-(A) If there is genuinely INDEPENDENT work — a step that does not consume the running job's output
-and does not rewrite the matrix the pipeline continues from — DO IT IN PARALLEL. Launch it too, as
-its own background \`scagent-compute\` job, so you stay responsive. Independent computes are safe to
-run at once: each records separately under its own execution id (nothing is lost or clobbered).
-Classic parallelizable work: different annotation methods (SCimilarity vs CellTypist), differential
-expression, integration scoring — they read the current clustering and each write a SEPARATE result.
-If you just told the user "while this runs I'll do X," then actually launch X now — announcing
-parallel work and then waiting idle is a failure.
+That is the list. Nothing else. Do not extend it by reasoning that some other step "might be slow":
+QC, normalization, HVG, PCA, neighbors, UMAP, clustering, doublet scoring, cluster QC, batch
+investigation, DE, scoring, plots and every review call all run INLINE, however large the dataset
+looks. Those steps finish in seconds to a couple of minutes on GPU, and backgrounding them has
+repeatedly cost more time than it saved.
 
-(B) If there is NOTHING independent to do — the only next steps depend on the running result — then
-STOP and wait. Post one short line (what is running, that you will report when it lands) and END
-YOUR TURN. A message-only turn is correct here; it is not "silent tool-chaining." Do not re-check the
-log, re-run anything, or narrate step by step. Give the job real time to run.
+To offload one of the four: call the \`task\` tool with subagent_type "scagent-compute",
+background true, and a prompt naming the exact capability and its arguments. It returns immediately,
+records its result into THIS analysis (same run, its own execution id), and you are notified
+automatically when it finishes.
 
-While any background job is running:
-- Do NOT run two matrix-MUTATING steps at once, and do NOT start a step before the result it depends
-  on exists. Parallelize only mutually independent, read-mostly work; serialize anything that
-  transforms the matrix the rest of the pipeline continues from (QC/filter, normalize, HVG, PCA,
-  neighbors, clustering, the integration that becomes the working representation).
+**The head rule — this is what actually goes wrong.** A background job computes against the active
+artifact as it was WHEN YOU LAUNCHED IT, and commits when it finishes. If you advance the active
+head in the meantime, its commit is REFUSED ("derived from head X but the active head is now Y").
+Working around that refusal with \`branch_from\` is worse, not better: the result lands off the
+active line, and evidence floors only accept evidence on the active line, so the review that
+consumes it will be blocked. Therefore, while a background job is in flight, run NOTHING that
+advances the head — no capability that transforms or re-commits the working matrix.
+
+Since the four offloadable jobs are exactly the steps the pipeline continues from, in practice this
+means: after you launch one, STOP and wait. Post one short line — what is running, that you will
+report when it lands — and END YOUR TURN. A message-only turn is correct here; it is not "silent
+tool-chaining." Do not re-check the log, re-run anything, or narrate step by step.
+
+The one safe parallel case: two annotation methods (SCimilarity and CellTypist) read the current
+clustering and each write a SEPARATE result without advancing the head, so those two may run at
+once. Nothing else pairs.
+
+While a background job is running:
 - Check progress only when the USER asks. Then run \`./watchprogress.sh --once\` ONCE and report what
   it says (running + elapsed, or the latest epoch). That is a plain FILE/PROCESS READ — not a scagent
   tool call and not "polling the subagent" — so it is allowed, but on request, not in a loop.
@@ -161,8 +169,7 @@ While any background job is running:
 - Do NOT message or "poll" the SUBAGENT through the task channel; completion is pushed to you.
 
 When a completion notice arrives, read that job's durable result (by execution id) and carry the
-workflow forward. If several jobs were running in parallel, wait until the ones a step depends on
-have all landed before starting that step.`
+workflow forward.`
 
 export const plugin: Plugin = async ({ directory, client }) => {
   const mapDir = join(directory, "session-map")
