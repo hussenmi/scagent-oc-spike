@@ -12,3 +12,4 @@ session-map/scagent-map.json
 __pycache__/
 *.pyc
 *.pre-sdk-*
+data/
