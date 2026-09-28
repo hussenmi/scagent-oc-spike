@@ -41,7 +41,7 @@ from scagent_sdk.runtime.resume import resume_context
 from scagent_sdk.session import AnalysisSession
 
 # --- roots / config (all overridable; default to scagent-sdk's own) ---------
-_SDK = Path("/data1/peerd/ibrahih3/scagent-sdk")
+_SDK = Path(os.environ.get("SCAGENT_SDK_PROJECT_ROOT", str(Path(__file__).resolve().parents[2] / "scagent-sdk")))
 SKILLS_ROOT = Path(os.environ.get("SCAGENT_SDK_SKILLS_DIR", str(_SDK / ".claude" / "skills")))
 SESSIONS_ROOT = Path(
     os.environ.get("SCAGENT_SDK_SESSIONS_DIR", str(Path(__file__).resolve().parent.parent / "scagent_sessions"))

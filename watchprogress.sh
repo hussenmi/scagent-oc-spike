@@ -16,7 +16,7 @@ HERE="$(cd "$(dirname "$0")" && pwd -P)"
 RUNTIME_ROOT="${SCAGENT_RUNTIME_DIR:-$HERE}"
 ROOT="$RUNTIME_ROOT/scagent_sessions"
 MAP_DIR="$RUNTIME_ROOT/session-map"
-PY="${SCAGENT_PYTHON:-/data1/peerd/ibrahih3/scagent-sdk/.venv/bin/python}"
+PY="${SCAGENT_PYTHON:-${SCAGENT_SDK_ROOT:-$HERE/../scagent-sdk}/.venv/bin/python}"
 POLL=0.5
 
 resolve_run() {

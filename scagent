@@ -20,7 +20,8 @@ while [ -L "$SOURCE" ]; do
 done
 HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 CALLER="$(pwd -P)"
-SDK="${SCAGENT_SDK_ROOT:-/data1/peerd/ibrahih3/scagent-sdk}"
+SDK="${SCAGENT_SDK_ROOT:-$(cd -P "$HERE/../scagent-sdk" 2>/dev/null && pwd)}"
+[ -n "$SDK" ] && [ -d "$SDK" ] || { echo "scagent: scagent-sdk not found; clone it next to this repo or set SCAGENT_SDK_ROOT" >&2; exit 2; }
 OPENCODE_CONFIG_FILE="${SCAGENT_OPENCODE_CONFIG:-$SDK/configs/opencode/iris.json}"
 PY="${SCAGENT_PYTHON:-$SDK/.venv/bin/python}"
 OPENCODE_BIN="${SCAGENT_OPENCODE_BIN:-$HOME/.opencode/bin/opencode}"
@@ -117,6 +118,7 @@ config.setdefault("mcp", {})["scagent"] = {
         f"{integration}/mcp_server/server.py",
     ],
     "environment": {
+        "SCAGENT_SDK_PROJECT_ROOT": sdk,
         "SCAGENT_SDK_SKILLS_DIR": f"{sdk}/.claude/skills",
         "SCAGENT_SDK_SESSIONS_DIR": f"{runtime}/scagent_sessions",
         "SCAGENT_SDK_ENVIRONMENTS_FILE": f"{sdk}/configs/environments/iris.toml",

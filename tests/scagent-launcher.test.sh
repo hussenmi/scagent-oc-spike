@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
-SDK_CONFIG="${SCAGENT_SDK_ROOT:-/data1/peerd/ibrahih3/scagent-sdk}/configs/opencode/iris.json"
+SDK_CONFIG="$(cd -P "${SCAGENT_SDK_ROOT:-$ROOT/../scagent-sdk}" && pwd)/configs/opencode/iris.json"
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT

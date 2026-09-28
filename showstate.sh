@@ -4,7 +4,7 @@
 here="$(cd "$(dirname "$0")" && pwd -P)"
 runtime_root="${SCAGENT_RUNTIME_DIR:-$here}"
 root="$runtime_root/scagent_sessions"
-PY="${SCAGENT_PYTHON:-/data1/peerd/ibrahih3/scagent-sdk/.venv/bin/python}"
+PY="${SCAGENT_PYTHON:-${SCAGENT_SDK_ROOT:-$here/../scagent-sdk}/.venv/bin/python}"
 found=0
 for d in "$root"/*/; do
   [ -f "$d/state.json" ] || continue
