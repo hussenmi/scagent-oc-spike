@@ -12,9 +12,11 @@
 #     --once      print the current job's status + log tail once and exit (agent-facing check)
 set -u
 
-HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$HERE/scagent_sessions"
-PY=/data1/peerd/ibrahih3/scagent-sdk/.venv/bin/python
+HERE="$(cd "$(dirname "$0")" && pwd -P)"
+RUNTIME_ROOT="${SCAGENT_RUNTIME_DIR:-$HERE}"
+ROOT="$RUNTIME_ROOT/scagent_sessions"
+MAP_DIR="$RUNTIME_ROOT/session-map"
+PY="${SCAGENT_PYTHON:-/data1/peerd/ibrahih3/scagent-sdk/.venv/bin/python}"
 POLL=0.5
 
 resolve_run() {
@@ -26,13 +28,13 @@ resolve_run() {
   # active opencode session -> its durable run (session-map/current.txt + scagent-map.json)
   if [ "${1:-}" != "--newest" ]; then
     local run
-    run="$("$PY" - "$HERE" <<'PYEOF' 2>/dev/null
+    run="$("$PY" - "$MAP_DIR" <<'PYEOF' 2>/dev/null
 import json, sys
 from pathlib import Path
-here = Path(sys.argv[1])
-sid = (here / "session-map" / "current.txt")
+map_dir = Path(sys.argv[1])
+sid = map_dir / "current.txt"
 sid = sid.read_text().strip() if sid.is_file() else ""
-mp = here / "session-map" / "scagent-map.json"
+mp = map_dir / "scagent-map.json"
 m = json.loads(mp.read_text()) if mp.is_file() else {}
 print(m.get(sid, ""))
 PYEOF

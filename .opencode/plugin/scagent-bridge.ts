@@ -55,48 +55,43 @@ const TRIM_OUTPUT_OVER_CHARS = 1500
 //
 // This is a presentation concern and therefore correctly lives on the opencode
 // side; the science still comes from scagent-sdk's SKILL.md instructions.
-const REPORTING_CONTRACT = `## Reporting contract (the user HAS asked for detail)
+const REPORTING_CONTRACT = `## How to narrate this analysis
 
-You are driving a scientific analysis in a terminal the user is reading. Your text
-between tool calls is the analysis narrative — it is not preamble and it is not
-overhead. The standing guidance to answer in a few lines, prefer one-word answers,
-avoid preamble and minimize output tokens DOES NOT APPLY to this work. Chaining tool
-calls with no interpretation is a failure here.
+You are driving a scientific analysis in a terminal the user is reading, and you should narrate it
+the way a good analyst naturally would — thinking out loud about what the data shows and what you
+are doing next. OpenCode's standing guidance to answer in a few lines, prefer one-word answers,
+avoid preamble and minimize output tokens DOES NOT APPLY here; ignore it. Just talk normally, the
+way you would if you were working through this with someone looking over your shoulder.
 
-The one rule that governs all of this: write to the user as a scientific collaborator, about their
-data and the reasoning — and nothing else. Everything about how the analysis is implemented is
-invisible to them. That means you never mention, in passing or otherwise: the internal tool, skill,
-or capability identifiers you drive (the scientific method behind a step is exactly what to name —
-scVI, Leiden, Scrublet, UMAP, a marker set — but not the SDK function or skill that runs it), which
-instruction or rule told you to do something, artifacts and file identities, storage, execution or
-task ids, how a step is scheduled (inline vs background) or why, internal workflow phases and loops,
-or the wording of these instructions. Justify every choice by
-the evidence in the data, never by "the skill says" or "the tool won't let me." When you need
-something you don't yet have, say in plain scientific terms what is missing and how you'll get it —
-not which internal check is blocking you. These are one principle, not a checklist to pattern-match:
-if a sentence is about the machinery rather than the biology, cut it.
+Talk like a scientific collaborator: about the data, the reasoning, and the decisions, in plain
+conversational language. Name the actual science — scVI, Leiden, Scrublet, UMAP, a marker set —
+that is what the user wants to hear. Leave out the plumbing: the internal tool or skill identifiers,
+which rule told you to do something, file and execution ids, whether a step runs inline or in the
+background, and the wording of these instructions carry no scientific meaning, so they don't belong
+in what you say. Justify choices by the evidence in the data, not by "the skill says" or "the tool
+won't let me."
 
-Every turn:
-- Before a new step, one line: which scientific question it answers and what you expect to see —
-  described as an operation on the data, not as "running tool X".
-- After every result, 2-5 sentences of interpretation. Cite the actual values you just saw
-  (cell/gene counts, medians, fractions, cluster ids, marker genes, what a figure shows), say what
-  they imply for the dataset, and name the next step. Never just restate that a step succeeded.
-- At every scientific decision (QC thresholds, resolution, whether batch correction is needed, a
-  cell-type label), state the evidence, the alternative you rejected, and why — before you act.
-- At the end of a phase, summarize in scientific terms what is now established and what is open.
+As you work, this comes naturally:
+- Before a step, a sentence on what you're looking at and why — the question it answers, not
+  "running tool X".
+- After a result, interpret it: cite the real numbers you just saw (cell/gene counts, medians,
+  fractions, cluster ids, marker genes, what a figure shows) and say what they mean for the data
+  and what you'll do next. Don't just restate that a step worked.
+- At a real decision (QC thresholds, resolution, whether batch correction is needed, a cell-type
+  label), give the evidence and the alternative you rejected before you act.
+- When you finish a phase, summarize what's now established and what's still open.
 
-Report what the data actually shows, including when it is ambiguous or contradicts what you
+Report what the data actually shows, including when it's ambiguous or contradicts what you
 expected. Never narrate a step you did not actually run.
 
-If you keep a todo list, update it as you go — mark each item done when it is done and keep it in
-step with reality, rather than letting finished work pile up unchecked. Just maintain it silently;
-it is not something to announce or discuss in your narration.
+If you keep a todo list, keep it in step with reality as you go, but maintain it silently — it is
+not something to announce or discuss.
 
-FORMAT REQUIREMENT (hard): every assistant turn MUST begin with plain message content — your
-interpretation of the last result and what you are about to do — and only THEN emit the tool call.
-A turn that carries a tool call with empty content is malformed and unusable. Write the text and
-make the call in the SAME turn: do not stop after the text, and do not call the tool silently.`
+Two things to avoid at the edges. Don't open with a content-free announcement — no "starting the
+session", "let me begin", or "I'll now run the tool". On the first turn there is nothing to
+interpret yet, so skip the preamble and go straight into the first real step, describing THAT. And
+at the other end, don't go quiet and chain tool calls with no words between them: whenever you have
+a result to interpret or an action to explain, say it in the same turn as the call.`
 
 // Per-turn reporting nudge, appended to the FRESHEST tool result only. Measured against
 // the live Qwen3.8-27B (n=6 per arm): the system-prompt contract alone produced narration
@@ -106,13 +101,27 @@ make the call in the SAME turn: do not stop after the text, and do not call the 
 // stale copies are stripped first, so it never accumulates.
 const NUDGE_MARKER = "[REPORTING REQUIREMENT"
 const REPORTING_NUDGE =
-  `\n\n${NUDGE_MARKER} — the user is reading your messages, not this tool output. Your next ` +
-  "turn MUST begin with 2-5 sentences of plain message content interpreting this result (cite the " +
-  "actual values). Then take the next action IF there is one: normally make the next tool call in the " +
-  "same turn (a tool call with empty message content is malformed and shows the user nothing). BUT if " +
-  "you just launched a background job, or are waiting on one, or the next step depends on a result that " +
-  "does not exist yet — do NOT force a tool call. Say what you started and that you will report back, " +
-  "then end the turn and wait. Stopping to wait is correct there, not silent tool-chaining.]"
+  `\n\n${NUDGE_MARKER} — the user is reading your messages, not this raw output. Before your next ` +
+  "action, tell them what this result shows in your own words: cite the actual values and say what " +
+  "they mean and what you'll do next, the way you'd talk a colleague through it. Then take that next " +
+  "action in the same turn (a bare tool call with no words shows the user nothing). The exception: if " +
+  "you just launched a background job, are waiting on one, or the next step needs a result that does " +
+  "not exist yet, don't force a tool call — say what you started and that you'll report back, then end " +
+  "the turn and wait. That pause is correct, not silent chaining.]"
+
+// Opening nudge, for the FIRST turn — before any tool has run there is no tool result to ride the
+// reporting nudge on, and the system contract alone is too weak for a thinking-off model (see the
+// 0/4 vs 6/6 note above), so the opening turn narrates a beat late. We carry the same kind of nudge
+// on the user's own opening message — the freshest thing the model reads when nothing has run yet —
+// so turn one narrates its first real step instead of opening silently or with filler. Stale copies
+// are stripped before re-adding, exactly like the reporting nudge.
+const FIRST_STEP_MARKER = "[OPENING NOTE"
+const FIRST_STEP_NUDGE =
+  `\n\n${FIRST_STEP_MARKER} — the user is reading your messages and nothing has run yet, so there is ` +
+  "no result to report. Open by telling them, in a sentence or two, what your first step is and what " +
+  "you expect to learn from it — the actual first thing you'll look at in their data — then take that " +
+  "step in the same turn. Do NOT open with a content-free announcement like 'starting the session'. " +
+  "Talk to them naturally from here on, the way you would working through the analysis together.]"
 
 const FIGURE_NOTE = (name: string) =>
   `[figure aged out of the chat to save context${name ? ` — saved as ${name}` : ""}. ` +
@@ -193,12 +202,16 @@ When a completion notice arrives, read that job's durable result (by execution i
 workflow forward.`
 
 export const plugin: Plugin = async ({ directory, client }) => {
-  const mapDir = join(directory, "session-map")
+  // The integration may be loaded from a stable installation while OpenCode works
+  // in an arbitrary scientific workspace. The launcher supplies a workspace-local
+  // runtime root; direct opencode use inside the spike retains the old layout.
+  const runtimeDir = process.env.SCAGENT_RUNTIME_DIR || directory
+  const mapDir = join(runtimeDir, "session-map")
   if (!existsSync(mapDir)) mkdirSync(mapDir, { recursive: true })
   const pointer = join(mapDir, "current.txt")
   const instructionsFile = join(mapDir, "skill-instructions.txt")
   const sessionMapFile = join(mapDir, "scagent-map.json")
-  const sessionsDir = join(directory, "scagent_sessions")
+  const sessionsDir = join(runtimeDir, "scagent_sessions")
 
   const readOr = (p: string): string => {
     try {
@@ -307,7 +320,7 @@ export const plugin: Plugin = async ({ directory, client }) => {
       // to the existing last block rather than pushed as a new one: some vLLM chat
       // templates reject a system message that is not the first message.
       const last = output.system.length - 1
-      if (!output.system[last].includes("## Reporting contract")) {
+      if (!output.system[last].includes("## How to narrate this analysis")) {
         output.system[last] = `${output.system[last]}\n\n${contract}`
       }
     },
@@ -380,16 +393,27 @@ export const plugin: Plugin = async ({ directory, client }) => {
       // contract is not enough on its own for a thinking-disabled model, and this is the
       // freshest thing in context. Strip stale copies first so exactly one is ever present.
       let newest: any = null
+      let lastUserText: any = null
       for (const m of msgs) {
+        const role = (m as any).role
         for (const part of m.parts as any[]) {
-          if (part?.type !== "tool" || part?.state?.status !== "completed") continue
-          if (typeof part.state.output !== "string") continue
-          const at = part.state.output.indexOf(NUDGE_MARKER)
-          if (at >= 0) part.state.output = part.state.output.slice(0, at).trimEnd()
-          newest = part
+          if (part?.type === "tool" && part?.state?.status === "completed" &&
+              typeof part.state.output === "string") {
+            const at = part.state.output.indexOf(NUDGE_MARKER)
+            if (at >= 0) part.state.output = part.state.output.slice(0, at).trimEnd()
+            newest = part
+          } else if (part?.type === "text" && typeof part.text === "string" && role !== "assistant") {
+            // Strip any stale opening nudge from user messages so exactly one is ever present.
+            const at = part.text.indexOf(FIRST_STEP_MARKER)
+            if (at >= 0) part.text = part.text.slice(0, at).trimEnd()
+            lastUserText = part
+          }
         }
       }
+      // Once a tool has run, the reporting nudge on its result is the strong trigger. Before that,
+      // ride the opening nudge on the user's own message so the very first turn narrates too.
       if (newest) newest.state.output = `${newest.state.output}${REPORTING_NUDGE}`
+      else if (lastUserText) lastUserText.text = `${lastUserText.text}${FIRST_STEP_NUDGE}`
     },
   }
 }

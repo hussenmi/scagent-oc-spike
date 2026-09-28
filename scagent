@@ -1,37 +1,168 @@
 #!/usr/bin/env bash
-# scagent — one entry point for the scagent × opencode spike. Run from anywhere; it
-# operates on this folder. For now use it as ./scagent <cmd> from inside the spike
-# (symlink it onto your PATH later for a bare `scagent`).
+# scagent — one entry point for the scagent × opencode integration.
 #
-#   ./scagent start [opencode-args]   launch the TUI with background subagents ENABLED
-#   ./scagent watch [--once] [run]    live progress of the running compute (or a one-shot read)
-#   ./scagent state                   pretty-print scagent-sdk's durable facts per run
+#   scagent start [--workspace DIR] [opencode-args]
+#   scagent run   [--workspace DIR] [opencode-run-args] MESSAGE
+#   scagent watch [--workspace DIR] [--once] [run]
+#   scagent state [--workspace DIR]
+#   scagent config [--workspace DIR]
 #
-# `start` is the important one: opencode gates background offload behind an env var that
-# must live in opencode's OWN process env (opencode.json's mcp.*.environment only reaches
-# the MCP server), so we export it here and exec opencode from this directory.
+# The integration files live beside this launcher; the scientific work and durable
+# session live in the selected workspace. A workspace outside this spike stores its
+# runtime data under <workspace>/.scagent/. Invoking ordinary opencode is unaffected.
 set -euo pipefail
-cd "$(dirname "$0")"
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  source_dir="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$source_dir/$SOURCE"
+done
+HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+CALLER="$(pwd -P)"
+SDK="${SCAGENT_SDK_ROOT:-/data1/peerd/ibrahih3/scagent-sdk}"
+OPENCODE_CONFIG_FILE="${SCAGENT_OPENCODE_CONFIG:-$SDK/configs/opencode/iris.json}"
+PY="${SCAGENT_PYTHON:-$SDK/.venv/bin/python}"
+OPENCODE_BIN="${SCAGENT_OPENCODE_BIN:-$HOME/.opencode/bin/opencode}"
 
 cmd="${1:-start}"
 [ $# -gt 0 ] && shift || true
 
+workspace="$CALLER"
+runtime_dir=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --workspace|-C)
+      [ $# -ge 2 ] || { echo "scagent: $1 requires a directory" >&2; exit 2; }
+      workspace="$2"
+      shift 2
+      ;;
+    --runtime-dir)
+      [ $# -ge 2 ] || { echo "scagent: $1 requires a directory" >&2; exit 2; }
+      runtime_dir="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+prepare_workspace() {
+  mkdir -p "$workspace"
+  workspace="$(cd "$workspace" && pwd -P)"
+
+  if [ -z "$runtime_dir" ]; then
+    if [ "$workspace" = "$HERE" ]; then
+      # Preserve the historical spike layout and all existing sessions.
+      runtime_dir="$HERE"
+    else
+      runtime_dir="$workspace/.scagent"
+    fi
+  fi
+  mkdir -p "$runtime_dir/session-map" "$runtime_dir/scagent_sessions"
+  runtime_dir="$(cd "$runtime_dir" && pwd -P)"
+
+  export SCAGENT_RUNTIME_DIR="$runtime_dir"
+  export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
+
+  # Every launch uses the SDK-owned canonical configuration and this exact
+  # bridge implementation, regardless of the scientific workspace.
+  export OPENCODE_CONFIG="$OPENCODE_CONFIG_FILE"
+  export OPENCODE_CONFIG_DIR="$HERE/.opencode"
+
+  # External workspaces can inherit unrelated opencode.json files from parent
+  # directories. Put the canonical SDK config in OpenCode's highest-precedence
+  # inline layer, then replace only the runtime-specific MCP paths.
+  export OPENCODE_CONFIG_CONTENT
+  OPENCODE_CONFIG_CONTENT="$("$PY" - "$runtime_dir" "$HERE" "$SDK" "$OPENCODE_CONFIG_FILE" <<'PYEOF'
+import json
+import os
+import sys
+from pathlib import Path
+
+runtime = sys.argv[1]
+integration = sys.argv[2]
+sdk = sys.argv[3]
+config_path = sys.argv[4]
+try:
+    caller = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT", "{}"))
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"invalid OPENCODE_CONFIG_CONTENT: {exc}") from exc
+try:
+    canonical = json.loads(Path(config_path).read_text())
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"invalid canonical OpenCode config {config_path}: {exc}") from exc
+
+
+def merge(base, override):
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            merge(base[key], value)
+        else:
+            base[key] = value
+
+
+config = caller
+merge(config, canonical)
+
+config.setdefault("mcp", {})["scagent"] = {
+    "type": "local",
+    "command": [
+        f"{sdk}/.venv/bin/python",
+        f"{integration}/mcp_server/server.py",
+    ],
+    "environment": {
+        "SCAGENT_SDK_SKILLS_DIR": f"{sdk}/.claude/skills",
+        "SCAGENT_SDK_SESSIONS_DIR": f"{runtime}/scagent_sessions",
+        "SCAGENT_SDK_ENVIRONMENTS_FILE": f"{sdk}/configs/environments/iris.toml",
+        "SCAGENT_SESSION_FILE": f"{runtime}/session-map/current.txt",
+        "SCAGENT_SESSION_MAP": f"{runtime}/session-map/scagent-map.json",
+        "SCAGENT_INSTRUCTIONS_FILE": f"{runtime}/session-map/skill-instructions.txt",
+        "SCAGENT_CHECKPOINT_FILE": f"{runtime}/session-map/durable-checkpoint.txt",
+    },
+    "enabled": True,
+}
+print(json.dumps(config, separators=(",", ":")))
+PYEOF
+)"
+}
+
+usage() {
+  sed -n '2,14s/^# \{0,1\}//p' "$0"
+}
+
 case "$cmd" in
   start)
-    export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
-    exec "$HOME/.opencode/bin/opencode" "$@"
+    prepare_workspace
+    exec "$OPENCODE_BIN" "$workspace" "$@"
+    ;;
+  run)
+    prepare_workspace
+    exec "$OPENCODE_BIN" run --dir "$workspace" "$@"
     ;;
   watch)
-    exec ./watchprogress.sh "$@"
+    prepare_workspace
+    exec "$HERE/watchprogress.sh" "$@"
     ;;
   state)
-    exec ./showstate.sh "$@"
+    prepare_workspace
+    exec "$HERE/showstate.sh" "$@"
+    ;;
+  config)
+    prepare_workspace
+    cd "$workspace"
+    exec "$OPENCODE_BIN" debug config "$@"
     ;;
   -h|--help|help)
-    grep '^#' "$0" | grep -v '^#!' | sed 's/^# \{0,1\}//'
+    usage
     ;;
   *)
-    echo "scagent: unknown command '$cmd' (try: start | watch | state | help)" >&2
+    echo "scagent: unknown command '$cmd' (try: start | run | watch | state | config | help)" >&2
     exit 1
     ;;
 esac

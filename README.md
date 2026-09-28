@@ -48,9 +48,45 @@ to a server-side check before `execute` — same predicates, same remediation te
 
 ## Run it
 
+`scagent` launches the scAgent-enabled OpenCode; `opencode` remains the ordinary
+coding agent. From the directory where the analysis should live:
+
+```bash
+scagent
+```
+
+The current directory becomes the scientific workspace. No dataset is required
+at launch; provide or discuss the dataset normally after the agent opens. Durable
+state is written beneath `.scagent/` in that workspace.
+
+The repository-local form remains available:
+
 ```bash
 cd /data1/peerd/ibrahih3/scagent-oc-spike
-~/.opencode/bin/opencode           # TUI; loads the plugin + scagent MCP server
+./scagent start                    # existing spike workspace
+```
+
+The launcher can keep the integration here while the scientific analysis lives
+in any independent workspace:
+
+```bash
+/data1/peerd/ibrahih3/scagent-oc-spike/scagent start \
+  --workspace /data1/peerd/ibrahih3/projects/my-analysis
+
+/data1/peerd/ibrahih3/scagent-oc-spike/scagent run \
+  --workspace /data1/peerd/ibrahih3/projects/my-analysis \
+  "Analyze data/input.h5ad"
+```
+
+External workspaces store their durable runtime under `.scagent/`; existing
+sessions in this spike retain the historical `scagent_sessions/` and
+`session-map/` locations. Ordinary `opencode` is unchanged and does not acquire
+the scagent integration merely because this launcher exists.
+
+OpenCode's resolved configuration can be inspected for a selected workspace:
+
+```bash
+./scagent config --workspace /path/to/analysis
 ```
 
 - Point it at an `.h5ad` (there's a tiny fixture at `data/tiny_raw.h5ad`, or the real
@@ -63,15 +99,15 @@ cd /data1/peerd/ibrahih3/scagent-oc-spike
 Inspect durable state and the session folder:
 
 ```bash
-./showstate.sh
-ls -R scagent_sessions/         # scagent-sdk's own session layout
+./scagent state --workspace /path/to/analysis
+./scagent watch --workspace /path/to/analysis --once
+ls -R /path/to/analysis/.scagent/scagent_sessions/
 ```
 
 Headless checks:
 
 ```bash
-~/.opencode/bin/opencode mcp list                     # scagent → connected
-~/.opencode/bin/opencode run "call inspect_dataset on data/tiny_raw.h5ad then finalize_analysis"
+./scagent run "call inspect_dataset on data/tiny_raw.h5ad then finalize_analysis"
 ```
 
 ## Context handling / compaction — the durable-state contract
