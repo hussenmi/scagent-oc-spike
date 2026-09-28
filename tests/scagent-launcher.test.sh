@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+SDK_CONFIG="${SCAGENT_SDK_ROOT:-/data1/peerd/ibrahih3/scagent-sdk}/configs/opencode/iris.json"
 TMP="$(mktemp -d)"
 TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
@@ -25,7 +26,7 @@ expected_runtime="$WORKSPACE/.scagent"
 
 grep -Fq "args=<run><--dir><$WORKSPACE><hello>" <<<"$out"
 grep -Fq "runtime=$expected_runtime" <<<"$out"
-grep -Fq "config=$ROOT/opencode.json" <<<"$out"
+grep -Fq "config=$SDK_CONFIG" <<<"$out"
 grep -Fq "config_dir=$ROOT/.opencode" <<<"$out"
 grep -Fq "\"SCAGENT_SDK_SESSIONS_DIR\":\"$expected_runtime/scagent_sessions\"" <<<"$out"
 test -d "$expected_runtime/session-map"
@@ -33,13 +34,13 @@ test -d "$expected_runtime/scagent_sessions"
 
 legacy="$(cd "$ROOT" && SCAGENT_PYTHON=python3 SCAGENT_OPENCODE_BIN="$FAKE" "$ROOT/scagent" run hello)"
 grep -Fq "runtime=$ROOT" <<<"$legacy"
-grep -Fxq "config=" <<<"$legacy"
-grep -Fxq "config_dir=" <<<"$legacy"
+grep -Fq "config=$SDK_CONFIG" <<<"$legacy"
+grep -Fq "config_dir=$ROOT/.opencode" <<<"$legacy"
 
 mkdir -p "$TMP/bin"
 ln -s "$ROOT/scagent" "$TMP/bin/scagent"
 linked="$(cd "$WORKSPACE" && SCAGENT_PYTHON=python3 SCAGENT_OPENCODE_BIN="$FAKE" "$TMP/bin/scagent" run hello)"
-grep -Fq "config=$ROOT/opencode.json" <<<"$linked"
+grep -Fq "config=$SDK_CONFIG" <<<"$linked"
 grep -Fq "config_dir=$ROOT/.opencode" <<<"$linked"
 grep -Fq "runtime=$expected_runtime" <<<"$linked"
 

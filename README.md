@@ -18,4 +18,5 @@ Sessions are written under `<workspace>/.scagent/`.
 - `scagent` — launcher
 - `mcp_server/server.py` — exposes scagent-sdk capabilities as MCP tools
 - `.opencode/plugin/scagent-bridge.ts` — session correlation and context injection
-- `opencode.json` — links to `scagent-sdk/configs/opencode/iris.json`
+
+Config comes from `scagent-sdk/configs/opencode/iris.json`.
