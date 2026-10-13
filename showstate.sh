@@ -2,8 +2,7 @@
 # Show scagent-sdk's durable facts for every session in this workspace.
 # State is owned entirely by scagent-sdk; this just pretty-prints state.json.
 here="$(cd "$(dirname "$0")" && pwd -P)"
-runtime_root="${SCAGENT_RUNTIME_DIR:-$here}"
-root="$runtime_root/scagent_sessions"
+root="${SCAGENT_SESSIONS_DIR:-$here/scagent_sessions}"
 PY="${SCAGENT_PYTHON:-${SCAGENT_SDK_ROOT:-$here/../scagent-sdk}/.venv/bin/python}"
 found=0
 for d in "$root"/*/; do

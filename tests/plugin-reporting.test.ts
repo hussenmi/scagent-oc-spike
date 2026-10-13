@@ -60,20 +60,20 @@ check(
   sys.system[0].split("## How to narrate this analysis").length - 1 === 1,
 )
 
-// 7: an explicitly selected runtime root owns correlation state even when the
+// 7: the launcher-chosen state dir owns correlation state even when the
 // scientific workspace is elsewhere.
-const runtime = mkdtempSync(join(tmpdir(), "scagent-plugin-runtime-"))
-process.env.SCAGENT_RUNTIME_DIR = runtime
+const stateDir = mkdtempSync(join(tmpdir(), "scagent-plugin-state-"))
+process.env.SCAGENT_STATE_DIR = stateDir
 const runtimeHooks: any = await plugin({
   directory: "/an/external/scientific/workspace",
   client: { session: { get: async () => ({ data: {} }) } },
 } as any)
 await runtimeHooks["chat.message"]({ sessionID: "session-external" })
-const pointer = join(runtime, "session-map", "current.txt")
-check("runtime root owns session pointer", existsSync(pointer))
+const pointer = join(stateDir, "current.txt")
+check("state dir owns session pointer", existsSync(pointer))
 check("session pointer records active root", readFileSync(pointer, "utf8") === "session-external")
-delete process.env.SCAGENT_RUNTIME_DIR
-rmSync(runtime, { recursive: true, force: true })
+delete process.env.SCAGENT_STATE_DIR
+rmSync(stateDir, { recursive: true, force: true })
 
 console.log(`\n${pass}/${pass + fail} passed`)
 if (fail) process.exit(1)

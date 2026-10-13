@@ -7,15 +7,14 @@
 # reported "nothing running" during a train and the agent then re-launched duplicates). scagent-sdk
 # now tees the worker's stdout to the log live, so once detected we can also show the tail (epochs).
 #
-#   ./watchprogress.sh [--once] [<run_id>|--newest]
+#   scagent watch [--once] [<run_id>|--newest]
 #     (no --once) stream progress, switching capabilities as they start; Ctrl-C to stop
 #     --once      print the current job's status + log tail once and exit (agent-facing check)
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
-RUNTIME_ROOT="${SCAGENT_RUNTIME_DIR:-$HERE}"
-ROOT="$RUNTIME_ROOT/scagent_sessions"
-MAP_DIR="$RUNTIME_ROOT/session-map"
+ROOT="${SCAGENT_SESSIONS_DIR:-$HERE/scagent_sessions}"
+MAP_DIR="${SCAGENT_STATE_DIR:-$HERE/session-map}"
 PY="${SCAGENT_PYTHON:-${SCAGENT_SDK_ROOT:-$HERE/../scagent-sdk}/.venv/bin/python}"
 POLL=0.5
 
@@ -50,13 +49,13 @@ if [ "${1:-}" = "--once" ]; then ONCE=1; shift; fi
 
 RUN="$(resolve_run "${1:-}")"
 if [ -z "${RUN:-}" ] || [ ! -d "$RUN" ]; then
-  echo "watchprogress: no run found under $ROOT" >&2
+  echo "scagent watch: no run found under $ROOT" >&2
   exit 1
 fi
 RUN="${RUN%/}"
 PENDING="$RUN/runtime/capabilities/pending"
 if [ "$ONCE" != "1" ]; then
-  echo "watchprogress: following $(basename "$RUN")  (Ctrl-C to stop)"
+  echo "scagent watch: following $(basename "$RUN")  (Ctrl-C to stop)"
   echo "               $PENDING"
   echo
 fi
@@ -110,7 +109,7 @@ fi
 cur=""      # staging dir currently being tailed
 tailpid=""
 cleanup() { [ -n "$tailpid" ] && kill "$tailpid" 2>/dev/null; }
-trap 'cleanup; echo; echo "watchprogress: stopped."; exit 0' INT TERM
+trap 'cleanup; echo; echo "scagent watch: stopped."; exit 0' INT TERM
 
 while true; do
   stg="$(live_staging)"

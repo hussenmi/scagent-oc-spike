@@ -190,7 +190,7 @@ clustering and each write a SEPARATE result without advancing the head, so those
 once. Nothing else pairs.
 
 While a background job is running:
-- Check progress only when the USER asks. Then run \`./watchprogress.sh --once\` ONCE and report what
+- Check progress only when the USER asks. Then run \`scagent watch --once\` ONCE and report what
   it says (running + elapsed, or the latest epoch). That is a plain FILE/PROCESS READ — not a scagent
   tool call and not "polling the subagent" — so it is allowed, but on request, not in a loop.
 - NEVER re-launch a job. If a check says nothing is running, it almost always FINISHED (a long
@@ -202,16 +202,15 @@ When a completion notice arrives, read that job's durable result (by execution i
 workflow forward.`
 
 export const plugin: Plugin = async ({ directory, client }) => {
-  // The integration may be loaded from a stable installation while OpenCode works
-  // in an arbitrary scientific workspace. The launcher supplies a workspace-local
-  // runtime root; direct opencode use inside the spike retains the old layout.
-  const runtimeDir = process.env.SCAGENT_RUNTIME_DIR || directory
-  const mapDir = join(runtimeDir, "session-map")
+  // The launcher says where this workspace's analyses (SCAGENT_SESSIONS_DIR) and
+  // per-user bookkeeping (SCAGENT_STATE_DIR) live. Plain `opencode` inside this repo
+  // falls back to the repo's own scagent_sessions/ and session-map/.
+  const mapDir = process.env.SCAGENT_STATE_DIR || join(directory, "session-map")
   if (!existsSync(mapDir)) mkdirSync(mapDir, { recursive: true })
   const pointer = join(mapDir, "current.txt")
   const instructionsFile = join(mapDir, "skill-instructions.txt")
   const sessionMapFile = join(mapDir, "scagent-map.json")
-  const sessionsDir = join(runtimeDir, "scagent_sessions")
+  const sessionsDir = process.env.SCAGENT_SESSIONS_DIR || join(directory, "scagent_sessions")
 
   const readOr = (p: string): string => {
     try {

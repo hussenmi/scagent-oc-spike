@@ -1,170 +1,31 @@
 #!/usr/bin/env bash
-# scagent — one entry point for the scagent × opencode integration.
+# scagent: single-cell analysis agent in the opencode TUI. `scagent help` lists commands.
 #
-#   scagent start [--workspace DIR] [opencode-args]
-#   scagent run   [--workspace DIR] [opencode-run-args] MESSAGE
-#   scagent watch [--workspace DIR] [--once] [run]
-#   scagent state [--workspace DIR]
-#   scagent config [--workspace DIR]
-#
-# The integration files live beside this launcher; the scientific work and durable
-# session live in the selected workspace. A workspace outside this spike stores its
-# runtime data under <workspace>/.scagent/. Invoking ordinary opencode is unaffected.
+# This wrapper only finds scagent-sdk and its agent Python, then runs launcher/scagent.py.
+# scagent-sdk is found from $SCAGENT_SDK_ROOT, or as a sibling folder of this one (a
+# development checkout or an installed release, which use the same layout).
 set -euo pipefail
 
 SOURCE="${BASH_SOURCE[0]}"
+LAUNCHER_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 while [ -L "$SOURCE" ]; do
   source_dir="$(cd -P "$(dirname "$SOURCE")" && pwd)"
   SOURCE="$(readlink "$SOURCE")"
   [[ "$SOURCE" != /* ]] && SOURCE="$source_dir/$SOURCE"
 done
 HERE="$(cd -P "$(dirname "$SOURCE")" && pwd)"
-CALLER="$(pwd -P)"
-SDK="${SCAGENT_SDK_ROOT:-$(cd -P "$HERE/../scagent-sdk" 2>/dev/null && pwd)}"
-[ -n "$SDK" ] && [ -d "$SDK" ] || { echo "scagent: scagent-sdk not found; clone it next to this repo or set SCAGENT_SDK_ROOT" >&2; exit 2; }
-OPENCODE_CONFIG_FILE="${SCAGENT_OPENCODE_CONFIG:-$SDK/configs/opencode/iris.json}"
+
+SDK="${SCAGENT_SDK_ROOT:-$(cd -P "$HERE/../scagent-sdk" 2>/dev/null && pwd || true)}"
+if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+  echo "scagent: scagent-sdk not found next to $HERE; set SCAGENT_SDK_ROOT" >&2
+  exit 2
+fi
 PY="${SCAGENT_PYTHON:-$SDK/.venv/bin/python}"
-OPENCODE_BIN="${SCAGENT_OPENCODE_BIN:-$HOME/.opencode/bin/opencode}"
+if [ ! -x "$PY" ]; then
+  echo "scagent: the agent Python is missing ($PY)." >&2
+  echo "  In a development checkout: (cd $SDK && source setup_gpu.sh)" >&2
+  exit 2
+fi
 
-cmd="${1:-start}"
-[ $# -gt 0 ] && shift || true
-
-workspace="$CALLER"
-runtime_dir=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --workspace|-C)
-      [ $# -ge 2 ] || { echo "scagent: $1 requires a directory" >&2; exit 2; }
-      workspace="$2"
-      shift 2
-      ;;
-    --runtime-dir)
-      [ $# -ge 2 ] || { echo "scagent: $1 requires a directory" >&2; exit 2; }
-      runtime_dir="$2"
-      shift 2
-      ;;
-    --)
-      shift
-      break
-      ;;
-    *)
-      break
-      ;;
-  esac
-done
-
-prepare_workspace() {
-  mkdir -p "$workspace"
-  workspace="$(cd "$workspace" && pwd -P)"
-
-  if [ -z "$runtime_dir" ]; then
-    if [ "$workspace" = "$HERE" ]; then
-      # Preserve the historical spike layout and all existing sessions.
-      runtime_dir="$HERE"
-    else
-      runtime_dir="$workspace/.scagent"
-    fi
-  fi
-  mkdir -p "$runtime_dir/session-map" "$runtime_dir/scagent_sessions"
-  runtime_dir="$(cd "$runtime_dir" && pwd -P)"
-
-  export SCAGENT_RUNTIME_DIR="$runtime_dir"
-  export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
-
-  # Every launch uses the SDK-owned canonical configuration and this exact
-  # bridge implementation, regardless of the scientific workspace.
-  export OPENCODE_CONFIG="$OPENCODE_CONFIG_FILE"
-  export OPENCODE_CONFIG_DIR="$HERE/.opencode"
-
-  # External workspaces can inherit unrelated opencode.json files from parent
-  # directories. Put the canonical SDK config in OpenCode's highest-precedence
-  # inline layer, then replace only the runtime-specific MCP paths.
-  export OPENCODE_CONFIG_CONTENT
-  OPENCODE_CONFIG_CONTENT="$("$PY" - "$runtime_dir" "$HERE" "$SDK" "$OPENCODE_CONFIG_FILE" <<'PYEOF'
-import json
-import os
-import sys
-from pathlib import Path
-
-runtime = sys.argv[1]
-integration = sys.argv[2]
-sdk = sys.argv[3]
-config_path = sys.argv[4]
-try:
-    caller = json.loads(os.environ.get("OPENCODE_CONFIG_CONTENT", "{}"))
-except json.JSONDecodeError as exc:
-    raise SystemExit(f"invalid OPENCODE_CONFIG_CONTENT: {exc}") from exc
-try:
-    canonical = json.loads(Path(config_path).read_text())
-except (OSError, json.JSONDecodeError) as exc:
-    raise SystemExit(f"invalid canonical OpenCode config {config_path}: {exc}") from exc
-
-
-def merge(base, override):
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            merge(base[key], value)
-        else:
-            base[key] = value
-
-
-config = caller
-merge(config, canonical)
-
-config.setdefault("mcp", {})["scagent"] = {
-    "type": "local",
-    "command": [
-        f"{sdk}/.venv/bin/python",
-        f"{integration}/mcp_server/server.py",
-    ],
-    "environment": {
-        "SCAGENT_SDK_PROJECT_ROOT": sdk,
-        "SCAGENT_SDK_SKILLS_DIR": f"{sdk}/.claude/skills",
-        "SCAGENT_SDK_SESSIONS_DIR": f"{runtime}/scagent_sessions",
-        "SCAGENT_SDK_ENVIRONMENTS_FILE": f"{sdk}/configs/environments/iris.toml",
-        "SCAGENT_SESSION_FILE": f"{runtime}/session-map/current.txt",
-        "SCAGENT_SESSION_MAP": f"{runtime}/session-map/scagent-map.json",
-        "SCAGENT_INSTRUCTIONS_FILE": f"{runtime}/session-map/skill-instructions.txt",
-        "SCAGENT_CHECKPOINT_FILE": f"{runtime}/session-map/durable-checkpoint.txt",
-    },
-    "enabled": True,
-}
-print(json.dumps(config, separators=(",", ":")))
-PYEOF
-)"
-}
-
-usage() {
-  sed -n '2,14s/^# \{0,1\}//p' "$0"
-}
-
-case "$cmd" in
-  start)
-    prepare_workspace
-    exec "$OPENCODE_BIN" "$workspace" "$@"
-    ;;
-  run)
-    prepare_workspace
-    exec "$OPENCODE_BIN" run --dir "$workspace" "$@"
-    ;;
-  watch)
-    prepare_workspace
-    exec "$HERE/watchprogress.sh" "$@"
-    ;;
-  state)
-    prepare_workspace
-    exec "$HERE/showstate.sh" "$@"
-    ;;
-  config)
-    prepare_workspace
-    cd "$workspace"
-    exec "$OPENCODE_BIN" debug config "$@"
-    ;;
-  -h|--help|help)
-    usage
-    ;;
-  *)
-    echo "scagent: unknown command '$cmd' (try: start | run | watch | state | config | help)" >&2
-    exit 1
-    ;;
-esac
+export SCAGENT_HOME="$HERE" SCAGENT_SDK_ROOT="$SDK" SCAGENT_LAUNCHER_DIR="$LAUNCHER_DIR"
+exec "$PY" -I "$HERE/launcher/scagent.py" "$@"
