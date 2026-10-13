@@ -86,6 +86,15 @@ else
   # A throwaway package cache inside the release: pixi hard-links installed files from its
   # cache, and a personal cache would tie the release's files to the builder's own folders.
   export PIXI_CACHE_DIR="$prefix/.build-cache"
+  # Seed it with a real copy of the builder's cached packages: some locked packages have
+  # since been removed from their channel (e.g. libxgboost-3.2.0 on rapidsai, 404 in
+  # 2026-10) and now exist only in caches that downloaded them before.
+  SEED_CACHE="${SEED_CACHE:-/usersoftware/peerd/$USER/pixi-cache/scagent-sdk/pkgs}"
+  if [ -d "$SEED_CACHE" ]; then
+    mkdir -p "$PIXI_CACHE_DIR/pkgs"
+    cp -a "$SEED_CACHE/." "$PIXI_CACHE_DIR/pkgs/"
+    rm -f "$PIXI_CACHE_DIR"/pkgs/*.lock
+  fi
   "$PIXI" config set --local --manifest-path "$prefix/scagent-sdk/pixi.toml" \
     detached-environments false >/dev/null
   for env in "${ENVIRONMENTS[@]}"; do
